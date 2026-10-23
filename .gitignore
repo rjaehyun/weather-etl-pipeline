@@ -218,3 +218,20 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Virtual environment
+.venv/
+
+# Generated files
+weather.db
+data/weather_clean.csv
+data/weather_rejected.csv
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.eggs/
+
+# IDE
+.vscode/
+.idea/
