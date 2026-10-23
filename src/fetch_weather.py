@@ -1,6 +1,8 @@
 import requests
 import pandas as pd
-
+import sqlite3
+from pathlib import Path
+from .validate import validate_data, print_validation_report
 
 def fetch_city(name: str, lat: float, lon: float) -> dict:
     """Fetch the last 7 days of daily weather for one city.
@@ -90,6 +92,59 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     
     return df
 
+def load_to_database(df: pd.DataFrame, db_path: str = "weather.db") -> None:
+    """Load cleaned data into SQLite, handling duplicates safely.
+    
+    The UNIQUE constraint on (city_id, date) ensures no duplicates.
+    If a row already exists, it is ignored.
+    """
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Ensure database exists
+    if not Path(db_path).exists():
+        print(f"Database {db_path} not found. Run init_db.py first.")
+        return
+    
+    try:
+        # Insert or replace cities
+        for city_name in df["city"].unique():
+            cursor.execute(
+                "INSERT OR IGNORE INTO cities (name) VALUES (?)",
+                (city_name,)
+            )
+        conn.commit()
+        
+        # Get city IDs
+        city_ids = cursor.execute("SELECT city_id, name FROM cities").fetchall()
+        city_name_to_id = {name: city_id for city_id, name in city_ids}
+        
+        # Insert weather data with conflict handling
+        for _, row in df.iterrows():
+            city_id = city_name_to_id[row["city"]]
+            # Convert datetime to string for SQLite
+            date_str = str(row["date"].date())
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO daily_weather 
+                (city_id, date, temp_max, temp_min, rainfall)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (city_id, date_str, row["temp_max"], row["temp_min"], row["rainfall"])
+            )
+        
+        conn.commit()
+        
+        # Print summary
+        weather_count = cursor.execute("SELECT COUNT(*) FROM daily_weather").fetchone()[0]
+        city_count = cursor.execute("SELECT COUNT(*) FROM cities").fetchone()[0]
+        print(f"✓ Loaded {weather_count} weather records for {city_count} cities")
+        
+    except Exception as e:
+        print(f"✗ Error loading data: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
     print("Starting fetch...")
@@ -101,15 +156,25 @@ if __name__ == "__main__":
     # Transform
     df = raw_to_dataframe(raw)
     print(f"\nRaw data shape: {df.shape}")
-    print(df.head())
     
     # Clean
     df_clean = clean_data(df)
-    print(f"\nCleaned data shape: {df_clean.shape}")
-    print(df_clean.head())
-    print(f"\nData types:\n{df_clean.dtypes}")
+    print(f"Cleaned data shape: {df_clean.shape}")
     
-    # Save
+    # Validate
+    df_valid, df_rejected = validate_data(df_clean)
+    print_validation_report(df_valid, df_rejected)
+    
+    # Save to CSV
     output_path = "data/weather_clean.csv"
-    df_clean.to_csv(output_path, index=False)
-    print(f"\n✓ Saved to {output_path}")
+    df_valid.to_csv(output_path, index=False)
+    print(f"\n✓ Saved {len(df_valid)} valid records to {output_path}")
+    
+    # Save rejected rows if any
+    if len(df_rejected) > 0:
+        rejected_path = "data/weather_rejected.csv"
+        df_rejected.to_csv(rejected_path, index=False)
+        print(f"✓ Saved {len(df_rejected)} rejected records to {rejected_path}")
+    
+    # Load to database
+    load_to_database(df_valid)
