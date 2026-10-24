@@ -3,16 +3,12 @@ import pandas as pd
 import sqlite3
 from pathlib import Path
 from .validate import validate_data, print_validation_report
+from psycopg2.extras import execute_values
+from .db import get_connection
 
 def fetch_city(name: str, lat: float, lon: float) -> dict:
     """Fetch the last 7 days of daily weather for one city.
-    
-    Args:
-        name: City name (for logging)
-        lat, lon: Coordinates
-        
-    Returns:
-        dict: API response with 'daily' key containing dates, temps, rainfall
+    Retries up to 3 times on timeout or server errors.
     """
     API_URL = "https://api.open-meteo.com/v1/forecast"
     params = {
@@ -23,9 +19,21 @@ def fetch_city(name: str, lat: float, lon: float) -> dict:
         "forecast_days": 1,
         "timezone": "Asia/Manila",
     }
-    response = requests.get(API_URL, params=params, timeout=30)
-    response.raise_for_status()
-    return response.json()
+
+    for attempt in range(1, 4):  # try up to 3 times
+        try:
+            print(f"  Attempt {attempt}...")
+            response = requests.get(API_URL, params=params, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.Timeout:
+            print(f"  Timeout on attempt {attempt} for {name}")
+            if attempt == 3:
+                raise
+        except requests.exceptions.RequestException as e:
+            print(f"  Error on attempt {attempt} for {name}: {e}")
+            if attempt == 3:
+                raise
 
 
 def fetch_all_cities() -> list[dict]:
@@ -92,57 +100,66 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     
     return df
 
-def load_to_database(df: pd.DataFrame, db_path: str = "weather.db") -> None:
-    """Load cleaned data into SQLite, handling duplicates safely.
-    
-    The UNIQUE constraint on (city_id, date) ensures no duplicates.
-    If a row already exists, it is ignored.
+def _to_none(value):
+    """Convert pandas NaN/NA to None so PostgreSQL stores NULL."""
+    return None if pd.isna(value) else float(value)
+
+
+def load_to_database(df: pd.DataFrame) -> None:
+    """Load cleaned data into PostgreSQL.
+
+    Idempotent: rerunning updates existing (city, date) rows instead of
+    creating duplicates. Updating (rather than ignoring) means forecast values
+    get refreshed once the real measurements are available.
     """
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    # Ensure database exists
-    if not Path(db_path).exists():
-        print(f"Database {db_path} not found. Run init_db.py first.")
-        return
-    
+    conn = get_connection()
     try:
-        # Insert or replace cities
-        for city_name in df["city"].unique():
-            cursor.execute(
-                "INSERT OR IGNORE INTO cities (name) VALUES (?)",
-                (city_name,)
-            )
-        conn.commit()
-        
-        # Get city IDs
-        city_ids = cursor.execute("SELECT city_id, name FROM cities").fetchall()
-        city_name_to_id = {name: city_id for city_id, name in city_ids}
-        
-        # Insert weather data with conflict handling
-        for _, row in df.iterrows():
-            city_id = city_name_to_id[row["city"]]
-            # Convert datetime to string for SQLite
-            date_str = str(row["date"].date())
-            cursor.execute(
-                """
-                INSERT OR IGNORE INTO daily_weather 
-                (city_id, date, temp_max, temp_min, rainfall)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (city_id, date_str, row["temp_max"], row["temp_min"], row["rainfall"])
-            )
-        
-        conn.commit()
-        
-        # Print summary
-        weather_count = cursor.execute("SELECT COUNT(*) FROM daily_weather").fetchone()[0]
-        city_count = cursor.execute("SELECT COUNT(*) FROM cities").fetchone()[0]
+        with conn:  # one transaction: all rows load, or none do
+            with conn.cursor() as cur:
+                # 1. Make sure every city exists
+                for city in df["city"].unique():
+                    cur.execute(
+                        "INSERT INTO cities (name) VALUES (%s) "
+                        "ON CONFLICT (name) DO NOTHING",
+                        (city,),
+                    )
+
+                # 2. Look up city IDs
+                cur.execute("SELECT city_id, name FROM cities")
+                city_ids = {name: city_id for city_id, name in cur.fetchall()}
+
+                # 3. Build all rows, then insert them in one batch
+                records = [
+                    (
+                        city_ids[row.city],
+                        row.date.date(),
+                        _to_none(row.temp_max),
+                        _to_none(row.temp_min),
+                        _to_none(row.rainfall),
+                    )
+                    for row in df.itertuples(index=False)
+                ]
+
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO daily_weather
+                        (city_id, date, temp_max, temp_min, rainfall)
+                    VALUES %s
+                    ON CONFLICT (city_id, date) DO UPDATE SET
+                        temp_max = EXCLUDED.temp_max,
+                        temp_min = EXCLUDED.temp_min,
+                        rainfall = EXCLUDED.rainfall
+                    """,
+                    records,
+                )
+
+                cur.execute("SELECT COUNT(*) FROM daily_weather")
+                weather_count = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM cities")
+                city_count = cur.fetchone()[0]
+
         print(f"✓ Loaded {weather_count} weather records for {city_count} cities")
-        
-    except Exception as e:
-        print(f"✗ Error loading data: {e}")
-        conn.rollback()
     finally:
         conn.close()
 

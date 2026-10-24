@@ -1,40 +1,28 @@
-import sqlite3
 from pathlib import Path
 
+from .db import get_connection
 
-def run_all_queries(db_path: str = "weather.db") -> None:
-    """Execute all queries in sql/queries/ and print results."""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    # Find all .sql files in queries folder
-    queries_dir = Path("sql/queries")
-    query_files = sorted(queries_dir.glob("*.sql"))
-    
-    for query_file in query_files:
-        print(f"\n{'='*60}")
-        print(f"Query: {query_file.name}")
-        print('='*60)
-        
-        # Read and execute the query
-        sql = query_file.read_text()
-        cursor.execute(sql)
-        
-        # Fetch and print results
-        rows = cursor.fetchall()
-        if not rows:
-            print("(No results)")
-        else:
-            # Print header
-            if cursor.description:
-                headers = [desc[0] for desc in cursor.description]
-                print(" | ".join(headers))
+
+def run_all_queries() -> None:
+    """Execute every query in sql/queries_pg/ and print the results."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            for query_file in sorted(Path("sql/queries_pg").glob("*.sql")):
+                print(f"\n{'=' * 60}\nQuery: {query_file.name}\n{'=' * 60}")
+                cur.execute(query_file.read_text())
+                rows = cur.fetchall()
+
+                if not rows:
+                    print("(No results)")
+                    continue
+
+                print(" | ".join(col.name for col in cur.description))
                 print("-" * 60)
-            # Print rows
-            for row in rows:
-                print(" | ".join(str(val) for val in row))
-    
-    conn.close()
+                for row in rows:
+                    print(" | ".join(str(value) for value in row))
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
