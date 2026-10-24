@@ -8,13 +8,7 @@ from .db import get_connection
 
 def fetch_city(name: str, lat: float, lon: float) -> dict:
     """Fetch the last 7 days of daily weather for one city.
-    
-    Args:
-        name: City name (for logging)
-        lat, lon: Coordinates
-        
-    Returns:
-        dict: API response with 'daily' key containing dates, temps, rainfall
+    Retries up to 3 times on timeout or server errors.
     """
     API_URL = "https://api.open-meteo.com/v1/forecast"
     params = {
@@ -25,9 +19,21 @@ def fetch_city(name: str, lat: float, lon: float) -> dict:
         "forecast_days": 1,
         "timezone": "Asia/Manila",
     }
-    response = requests.get(API_URL, params=params, timeout=30)
-    response.raise_for_status()
-    return response.json()
+
+    for attempt in range(1, 4):  # try up to 3 times
+        try:
+            print(f"  Attempt {attempt}...")
+            response = requests.get(API_URL, params=params, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.Timeout:
+            print(f"  Timeout on attempt {attempt} for {name}")
+            if attempt == 3:
+                raise
+        except requests.exceptions.RequestException as e:
+            print(f"  Error on attempt {attempt} for {name}: {e}")
+            if attempt == 3:
+                raise
 
 
 def fetch_all_cities() -> list[dict]:
