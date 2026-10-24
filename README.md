@@ -3,8 +3,8 @@
 ![CI](https://github.com/rjaehyun/weather-etl-pipeline/actions/workflows/ci.yml/badge.svg)
 
 An end-to-end data pipeline that collects daily weather data for Philippine
-cities, cleans and validates it with Python and pandas, stores it in a
-relational database, and analyzes it with SQL.
+cities, validates and cleans it with Python and pandas, stores it in
+PostgreSQL, and analyzes it with SQL.
 
 Built as a portfolio project to practice core data engineering skills:
 **extract, transform, load, validate, test, and automate.**
@@ -15,19 +15,19 @@ Built as a portfolio project to practice core data engineering skills:
 Open-Meteo API
       │
       ▼
-Python (requests)        ← fetch_weather.py
+Python (requests + retry logic)    ← fetch_weather.py
       │
       ▼
-pandas cleaning          ← clean_data()
+pandas cleaning                    ← clean_data()
       │
       ▼
-Data validation          ← validate.py
-      │         │
-      ▼         ▼
-  SQLite     rejected.csv (bad rows with reason codes)
+Data validation                    ← validate.py
+      │              │
+      ▼              ▼
+ PostgreSQL     rejected.csv       ← load_to_database()
       │
       ▼
-SQL analysis             ← sql/queries/
+SQL analysis                       ← sql/queries_pg/
 ```
 
 ## Tech Stack
@@ -36,7 +36,9 @@ SQL analysis             ← sql/queries/
 |---|---|
 | Language | Python 3.12 |
 | Data handling | pandas, requests |
-| Database | SQLite |
+| Database | PostgreSQL 16 |
+| DB driver | psycopg2 |
+| Containerization | Docker + docker-compose |
 | Testing | pytest |
 | CI | GitHub Actions |
 
@@ -45,26 +47,37 @@ SQL analysis             ← sql/queries/
 ```
 weather-etl-pipeline/
 ├── src/
-│   ├── fetch_weather.py   # fetch, clean, load
+│   ├── db.py              # PostgreSQL connection helper
+│   ├── fetch_weather.py   # fetch, clean, validate, load
 │   ├── validate.py        # data quality checks
-│   ├── init_db.py         # database setup
+│   ├── init_db.py         # database schema setup
 │   └── run_queries.py     # run all SQL queries
 ├── sql/
-│   ├── schema.sql         # table definitions
-│   └── queries/           # 8 analytical queries
+│   ├── postgres/
+│   │   └── 01_schema.sql  # PostgreSQL table definitions
+│   └── queries_pg/        # 8 analytical queries
 ├── tests/
-│   └── test_cleaning.py   # 9 pytest unit tests
+│   ├── test_cleaning.py   # 9 unit tests
+│   └── test_database.py   # 4 integration tests
 ├── docs/
-│   └── queries.md         # query documentation
+│   └── queries.md
 ├── data/                  # generated files (gitignored)
 ├── .github/workflows/
-│   └── ci.yml             # GitHub Actions CI
+│   └── ci.yml             # GitHub Actions CI with PostgreSQL service
+├── docker-compose.yml
+├── .env.example
 ├── conftest.py
 ├── requirements.txt
 └── README.md
 ```
 
 ## Getting Started
+
+### Prerequisites
+- Python 3.12+
+- Docker Desktop
+
+### Setup
 
 **1. Clone the repo**
 ```bash
@@ -79,22 +92,33 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-**3. Initialize the database**
+**3. Configure credentials**
 ```bash
-python src/init_db.py
+cp .env.example .env
+# Open .env and set your own password
 ```
 
-**4. Run the pipeline**
+**4. Start the database**
+```bash
+docker compose up -d
+```
+
+**5. Initialize the schema**
+```bash
+python -m src.init_db
+```
+
+**6. Run the pipeline**
 ```bash
 python -m src.fetch_weather
 ```
 
-**5. Run the SQL queries**
+**7. Run the SQL queries**
 ```bash
-python src/run_queries.py
+python -m src.run_queries
 ```
 
-**6. Run the tests**
+**8. Run the tests**
 ```bash
 pytest tests/ -v
 ```
@@ -112,31 +136,41 @@ instead of being silently dropped.
 
 ## SQL Queries
 
-Eight analytical queries in `sql/queries/`:
+Eight analytical queries in `sql/queries_pg/`:
 
 | Query | Technique |
 |---|---|
 | Average temperature per city | GROUP BY, aggregates |
-| Hottest and coldest days | Subqueries |
+| Hottest and coldest days | CTE, window functions |
 | Total and daily rainfall | CASE, aggregates |
 | Heavy rain days (> 10mm) | WHERE filter |
-| Temperature range per day | Arithmetic |
-| City comparison (latest date) | CTE (`WITH` clause) |
+| Temperature range per day | Arithmetic, cast |
+| City comparison (latest date) | CTE |
 | 7-day moving average | Window function (`AVG() OVER`) |
 | Data quality check | CASE, COUNT, nulls |
 
+## Tests
+
+13 tests across two files:
+
+| File | What it covers |
+|---|---|
+| `test_cleaning.py` | Type conversion, sorting, sentinel values, validation rules |
+| `test_database.py` | City inserts, row counts, idempotency, NULL handling |
+
 ## What I Learned
 
-- How to design an idempotent load (rerunning never creates duplicates)
-- How window functions like `AVG() OVER` work on real data
-- How GitHub Actions CI runs tests automatically on every PR
-- Why rejected rows should be tracked, not silently dropped
-- How `conftest.py` and `__init__.py` make pytest work in a src layout
+- How `ON CONFLICT ... DO UPDATE` makes PostgreSQL upserts idempotent
+- How `::numeric` casting works in PostgreSQL for `ROUND()`
+- How to run a real PostgreSQL service container in GitHub Actions CI
+- How `execute_values` batches inserts for better performance
+- Why rejected rows should be tracked with reason codes, not silently dropped
+- How retry logic prevents one slow API response from crashing the pipeline
 
 ## Next Steps
 
 - [ ] Schedule daily runs with Airflow
-- [ ] Upload cleaned data to AWS S3
+- [ ] Upload cleaned data to AWS S3 as Parquet
 - [ ] Rebuild SQL models in dbt
 - [ ] Provision infrastructure with Terraform
 - [ ] Add column-level data masking

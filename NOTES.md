@@ -25,3 +25,20 @@ Git ignores empty folders, so `data/` and `tests/` didn't show on GitHub.
 ### 6. CI couldn't find schema.sql
 The `sql/` folder wasn't committed to Git.
 **Fix:** ran `git add sql/` and committed the missing files.
+
+### 7. pandas Timestamp not compatible with psycopg2
+psycopg2 couldn't bind a pandas Timestamp directly.
+**Fix:** convert with `row.date.date()` to get a plain Python date object.
+
+### 8. ROUND() fails on double precision in PostgreSQL
+PostgreSQL's ROUND() doesn't accept double precision with a decimal argument.
+**Fix:** cast to numeric first: `ROUND(value::numeric, 2)` or
+`ROUND((expression)::numeric, 2)` for calculations.
+
+### 9. API timeout on Open-Meteo
+The API occasionally times out on one city mid-loop.
+**Fix:** added retry logic with up to 3 attempts per city.
+
+### 10. CI couldn't find PostgreSQL tables
+The schema wasn't applied before the tests ran in CI.
+**Fix:** added `python -m src.init_db` as a step before `pytest` in the workflow.
