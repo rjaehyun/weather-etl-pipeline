@@ -226,6 +226,7 @@ __marimo__/
 weather.db
 data/weather_clean.csv
 data/weather_rejected.csv
+data/weather_valid.csv
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -235,3 +236,7 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+
+# Airflow
+airflow/logs/
+airflow/.env

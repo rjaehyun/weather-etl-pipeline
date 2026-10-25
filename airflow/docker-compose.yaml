@@ -76,11 +76,20 @@ x-airflow-common:
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
     # The following line can be used to set a custom config file, stored in the local config folder
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+    PYTHONPATH: /opt/airflow/project
+    POSTGRES_HOST: weather_postgres
+    POSTGRES_PORT: "5432"
+    POSTGRES_DB: ${WEATHER_DB_NAME}
+    POSTGRES_USER: ${WEATHER_DB_USER}
+    POSTGRES_PASSWORD: ${WEATHER_DB_PASSWORD}
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+    - ../src:/opt/airflow/project/src:ro
+    - ../sql:/opt/airflow/project/sql:ro
+    - ../data:/opt/airflow/project/data
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -335,3 +344,8 @@ services:
 
 volumes:
   postgres-db-volume:
+
+networks:
+  default:
+    external: true
+    name: weather-etl-pipeline_default
