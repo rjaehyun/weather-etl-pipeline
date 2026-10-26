@@ -227,6 +227,7 @@ weather.db
 data/weather_clean.csv
 data/weather_rejected.csv
 data/weather_valid.csv
+data/pipeline_alerts.log
 __pycache__/
 *.pyc
 .pytest_cache/

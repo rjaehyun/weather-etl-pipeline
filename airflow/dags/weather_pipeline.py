@@ -1,25 +1,68 @@
-import os
-from datetime import datetime
+"""Daily weather ETL pipeline.
 
+Runs every day at 07:00 Manila time:
+init_db -> extract_and_clean -> validate -> load -> run_queries
+
+Each task retries on failure. If a task still fails after all retries,
+an alert is logged and appended to data/pipeline_alerts.log.
+"""
+
+import logging
+import os
+from datetime import datetime, timedelta
+
+import pendulum
 from airflow.sdk import dag, task
+
+log = logging.getLogger(__name__)
 
 PROJECT_DIR = "/opt/airflow/project"
 DATA_DIR = f"{PROJECT_DIR}/data"
 
 
 def _setup() -> None:
-    """Make relative paths in src/ (like sql/postgres/...) resolve correctly."""
+    """Make relative paths in src/ resolve correctly."""
     os.chdir(PROJECT_DIR)
     os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def notify_failure(context) -> None:
+    """Runs only when a task has failed AFTER using up all its retries."""
+    ti = context.get("task_instance") or context.get("ti")
+    message = (
+        f"PIPELINE ALERT | dag={getattr(ti, 'dag_id', '?')} "
+        f"task={getattr(ti, 'task_id', '?')} "
+        f"run={getattr(ti, 'run_id', '?')} "
+        f"attempt={getattr(ti, 'try_number', '?')} "
+        f"| error={context.get('exception')}"
+    )
+    log.error(message)
+
+    # Keep a permanent record you can read without opening the UI
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(f"{DATA_DIR}/pipeline_alerts.log", "a", encoding="utf-8") as f:
+        f.write(f"{datetime.now().isoformat()} {message}\n")
+
+
+default_args = {
+    "owner": "data-engineering",
+    "retries": 3,                               # up to 3 retries per task
+    "retry_delay": timedelta(minutes=2),        # wait between attempts
+    "execution_timeout": timedelta(minutes=10), # kill a task that hangs
+    "on_failure_callback": notify_failure,
+}
 
 
 @dag(
     dag_id="weather_pipeline",
     description="Fetch, clean, validate, and load daily weather data",
-    start_date=datetime(2026, 10, 1),
-    schedule=None,  # manual runs for now; Day 3 adds the daily schedule
-    catchup=False,
+    start_date=pendulum.datetime(2026, 10, 1, tz="Asia/Manila"),
+    schedule="0 7 * * *",   # every day at 07:00 Manila time
+    catchup=False,          # don't backfill missed days
+    max_active_runs=1,      # never run two copies at once
+    default_args=default_args,
     tags=["weather", "etl"],
+    doc_md=__doc__,
 )
 def weather_pipeline():
 
