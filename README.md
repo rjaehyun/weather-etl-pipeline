@@ -4,31 +4,29 @@
 
 An end-to-end data pipeline that collects daily weather data for Philippine
 cities, validates and cleans it with Python and pandas, stores it in
-PostgreSQL, and analyzes it with SQL.
+PostgreSQL, and analyzes it with SQL. Orchestrated by Apache Airflow, which
+runs it daily with automatic retries and failure alerts.
 
 Built as a portfolio project to practice core data engineering skills:
-**extract, transform, load, validate, test, and automate.**
+**extract, transform, load, validate, test, orchestrate, and automate.**
 
 ## Architecture
 
 ```
-Open-Meteo API
-      │
-      ▼
-Python (requests + retry logic)    ← fetch_weather.py
-      │
-      ▼
-pandas cleaning                    ← clean_data()
-      │
-      ▼
-Data validation                    ← validate.py
-      │              │
-      ▼              ▼
- PostgreSQL     rejected.csv       ← load_to_database()
-      │
-      ▼
-SQL analysis                       ← sql/queries_pg/
+                 Airflow DAG (daily, 07:00 Asia/Manila)
+ ┌──────────────────────────────────────────────────────────────┐
+ │                                                              │
+ │  init_db → extract_and_clean → validate → load → run_queries │
+ │                                    │                         │
+ └────────────────────────────────────┼─────────────────────────┘
+                                      │
+   Open-Meteo API ──► pandas ──► validation ──► PostgreSQL
+                                      │
+                                      └──► weather_rejected.csv
+
+   On final failure ──► PIPELINE ALERT in task log + data/pipeline_alerts.log
 ```
+![Airflow graph view](docs/images/airflow-graph.png)
 
 ## Tech Stack
 
@@ -36,11 +34,11 @@ SQL analysis                       ← sql/queries_pg/
 |---|---|
 | Language | Python 3.12 |
 | Data handling | pandas, requests |
-| Database | PostgreSQL 16 |
-| DB driver | psycopg2 |
-| Containerization | Docker + docker-compose |
-| Testing | pytest |
-| CI | GitHub Actions |
+| Database | PostgreSQL 16 (psycopg2) |
+| Orchestration | Apache Airflow 3.3 |
+| Containers | Docker, docker-compose |
+| Testing | pytest (17 tests) |
+| CI | GitHub Actions with a PostgreSQL service container |
 
 ## Project Structure
 
@@ -48,26 +46,25 @@ SQL analysis                       ← sql/queries_pg/
 weather-etl-pipeline/
 ├── src/
 │   ├── db.py              # PostgreSQL connection helper
-│   ├── fetch_weather.py   # fetch, clean, validate, load
+│   ├── fetch_weather.py   # fetch, clean, load
 │   ├── validate.py        # data quality checks
-│   ├── init_db.py         # database schema setup
+│   ├── init_db.py         # schema setup
 │   └── run_queries.py     # run all SQL queries
+├── airflow/
+│   ├── docker-compose.yaml
+│   ├── .env.example
+│   └── dags/
+│       └── weather_pipeline.py
 ├── sql/
-│   ├── postgres/
-│   │   └── 01_schema.sql  # PostgreSQL table definitions
+│   ├── postgres/01_schema.sql
 │   └── queries_pg/        # 8 analytical queries
 ├── tests/
-│   ├── test_cleaning.py   # 9 unit tests
-│   └── test_database.py   # 4 integration tests
+│   ├── test_cleaning.py   # unit tests
+│   ├── test_database.py   # integration tests
+│   └── test_dag.py        # DAG structure tests
 ├── docs/
-│   └── queries.md
-├── data/                  # generated files (gitignored)
-├── .github/workflows/
-│   └── ci.yml             # GitHub Actions CI with PostgreSQL service
-├── docker-compose.yml
+├── docker-compose.yml     # weather PostgreSQL
 ├── .env.example
-├── conftest.py
-├── requirements.txt
 └── README.md
 ```
 
@@ -75,107 +72,88 @@ weather-etl-pipeline/
 
 ### Prerequisites
 - Python 3.12+
-- Docker Desktop
+- Docker Desktop with at least 4 GB of memory
 
-### Setup
+### 1. Start the weather database
 
-**1. Clone the repo**
 ```bash
-git clone https://github.com/rjaehyun/weather-etl-pipeline.git
-cd weather-etl-pipeline
-```
-
-**2. Set up the environment**
-```bash
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-**3. Configure credentials**
-```bash
-cp .env.example .env
-# Open .env and set your own password
-```
-
-**4. Start the database**
-```bash
+cp .env.example .env          # then set your own password
 docker compose up -d
 ```
 
-**5. Initialize the schema**
+**Start this first.** Airflow joins the database's Docker network, so that
+network must exist before Airflow starts.
+
+### 2. Run the pipeline directly (no Airflow)
+
 ```bash
+python -m venv .venv
+source .venv/bin/activate     # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 python -m src.init_db
-```
-
-**6. Run the pipeline**
-```bash
 python -m src.fetch_weather
-```
-
-**7. Run the SQL queries**
-```bash
 python -m src.run_queries
 ```
 
-**8. Run the tests**
+### 3. Run it with Airflow
+
+```bash
+cd airflow
+cp .env.example .env          # use the same DB credentials as the root .env
+docker compose up airflow-init
+docker compose up -d
+```
+
+Open http://localhost:8080, find `weather_pipeline`, make sure it is
+unpaused, and trigger it, or wait for the daily 07:00 run.
+
+### 4. Run the tests
+
 ```bash
 pytest tests/ -v
 ```
+
+## Reliability Features
+
+| Feature | How it works |
+|---|---|
+| Retries | Each task retries up to 3 times, 2 minutes apart |
+| Timeouts | A task stuck for over 10 minutes is stopped |
+| Failure alerts | After the last retry, a `PIPELINE ALERT` line is logged and saved to `data/pipeline_alerts.log` |
+| Idempotent loads | `ON CONFLICT DO UPDATE` means reruns never create duplicates |
+| No overlap, no backfill | `max_active_runs=1` and `catchup=False` |
+| Rejected rows tracked | Bad rows go to `weather_rejected.csv` with reason codes |
 
 ## Data Quality
 
 Every run validates:
 - Temperature within a realistic range (−20°C to 50°C)
-- Max temperature is always ≥ min temperature
+- Max temperature is at least min temperature
 - Rainfall is non-negative
 - No missing city or date values
 
-Bad rows are saved to `data/weather_rejected.csv` with a reason code
-instead of being silently dropped.
-
 ## SQL Queries
 
-Eight analytical queries in `sql/queries_pg/`:
-
-| Query | Technique |
-|---|---|
-| Average temperature per city | GROUP BY, aggregates |
-| Hottest and coldest days | CTE, window functions |
-| Total and daily rainfall | CASE, aggregates |
-| Heavy rain days (> 10mm) | WHERE filter |
-| Temperature range per day | Arithmetic, cast |
-| City comparison (latest date) | CTE |
-| 7-day moving average | Window function (`AVG() OVER`) |
-| Data quality check | CASE, COUNT, nulls |
-
-## Tests
-
-13 tests across two files:
-
-| File | What it covers |
-|---|---|
-| `test_cleaning.py` | Type conversion, sorting, sentinel values, validation rules |
-| `test_database.py` | City inserts, row counts, idempotency, NULL handling |
+Eight analytical queries in `sql/queries_pg/` covering aggregates, CTEs,
+window functions (including a 7-day moving average), and data quality checks.
 
 ## What I Learned
 
-- How `ON CONFLICT ... DO UPDATE` makes PostgreSQL upserts idempotent
-- How `::numeric` casting works in PostgreSQL for `ROUND()`
-- How to run a real PostgreSQL service container in GitHub Actions CI
-- How `execute_values` batches inserts for better performance
-- Why rejected rows should be tracked with reason codes, not silently dropped
-- How retry logic prevents one slow API response from crashing the pipeline
+- How an Airflow DAG expresses task order, schedules, retries, and callbacks
+- Why `localhost` inside a container is not the host machine, and how Docker
+  networks let containers reach each other by name
+- Why a failure callback should fire only after retries are exhausted
+- How to test a DAG file's structure without importing Airflow
+- How idempotent upserts make retries and reruns safe
 
 ## Next Steps
 
-- [ ] Schedule daily runs with Airflow
 - [ ] Upload cleaned data to AWS S3 as Parquet
 - [ ] Rebuild SQL models in dbt
 - [ ] Provision infrastructure with Terraform
-- [ ] Add column-level data masking
+- [ ] Send alerts to email or Slack instead of a log file
 
 ## Data Source
 
-Weather data from [Open-Meteo](https://open-meteo.com/).
-Check their terms for usage and attribution requirements.
+Weather data from [Open-Meteo](https://open-meteo.com/). Check their terms
+for usage and attribution requirements.

@@ -42,3 +42,29 @@ The API occasionally times out on one city mid-loop.
 ### 10. CI couldn't find PostgreSQL tables
 The schema wasn't applied before the tests ran in CI.
 **Fix:** added `python -m src.init_db` as a step before `pytest` in the workflow.
+
+### 11. `curl` in PowerShell is not curl
+`curl -LfO` failed because PowerShell aliases `curl` to a different command.
+**Fix:** use `curl.exe`.
+
+### 12. `host.docker.internal` did not resolve inside the Airflow containers
+The containers could not translate the hostname.
+**Fix:** attached Airflow to the weather database's Docker network and used the
+container name (`weather_postgres`) as the host.
+
+### 13. `localhost` inside a container is the container itself
+This is why the database host needs a container name, not `localhost`.
+
+### 14. Compose commands depend on the current folder
+`docker compose exec airflow-worker ...` failed from the project root because
+the Airflow compose file lives in `airflow/`.
+**Fix:** run Airflow commands from the `airflow/` folder.
+
+### 15. Password authentication failed after the network fix
+The connection reached the database, but the credentials did not match.
+**Fix:** made the credentials consistent between the root `.env` and
+`airflow/.env`. The password is set when the database volume is first created.
+
+### 16. FERNET_KEY was wrapped in angle brackets
+`<...>` is not part of a Fernet key, so the key was invalid.
+**Fix:** removed the brackets.
